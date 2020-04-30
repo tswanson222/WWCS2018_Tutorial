@@ -1,1 +1,3 @@
-# WWCS 2018 Tutorial---Long-range correlations in time series data
+# WWCS 2018 Tutorial
+
+Tutorial in R on long-range correlations in time series data.
