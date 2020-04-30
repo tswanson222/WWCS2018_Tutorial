@@ -1,0 +1,307 @@
+---
+title: 'Long-range correlations in time-series data'
+author: "Trevor Swanson (trevorswanson222@gmail.com)"
+date: "February 1, 2018"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+if(!require(forecast)){install.packages('forecast', dependencies = TRUE)}
+if(!require(ggseas)){install.packages('ggseas', dependencies = TRUE)}
+if(!require(fractal)){install.packages('fractal', dependencies = TRUE)}
+if(!require(fracdiff)){install.packages('fracdiff', dependencies = TRUE)}
+if(!require(devtools)){install.packages('devtools', dependencies = TRUE)}
+if(!require(FGN)){
+  devtools::install_version(package = 'FGN', version = '2.0-12', dependencies = TRUE, 
+                            repos = 'http://cran.us.r-project.org')
+}
+```
+
+## Frequency Analysis
+
+A time series can be decomposed into a spectrum of component frequencies. The spectral density function reveals the squared correlations between each component frequency and the series as a whole. By performing frequency analysis, we are able to investigate whether any cyclical patterns exist within the data, as well as how much variance is accounted for by those patterns. This is an important method for detecting long-range correlations in time-series data, but is limited to cases where deterministic cycles are present. In other cases, we may aim to characterize global features of the spectral density function in order to detect complex correlation patterns. This procedure may help for understanding the "memory" of a given system in terms of how long past events can influence events in the future.  
+
+First, I demonstrate how to use a Fourier transform along with spectral analysis to investigate deterministic cycles within time series data. Then, I show how to detect long-range correlations by estimating the scaling exponent relating frequency with the power spectral density of a series.
+
+```{r packs, eval=F}
+# Packages needed (knitting this document will install):
+library(fractal)
+library(fracdiff)
+library(FGN) # No longer on CRAN -- using version 2.0-12
+library(forecast)
+library(ggseas)
+```
+
+### Example: Google word searches
+
+```{r cars}
+gDat <- read.csv("googleDat.csv", header = T)
+x <- ts(gDat[, -1], frequency = 12)
+plot(x, ylab = "Searches")
+```
+
+## Fourier transform
+
+```{r pressure, echo=TRUE}
+N <- length(x)
+fourier <- fft(x)/N
+A <- 2*Mod(fourier)[1:(N/2+1)] 
+A[1] <- A[1]/2
+phase <- Arg(fourier)[1:(N/2+1)]
+omega <- (2*pi*c(0:((N/2+1)))/N) 
+
+est <- matrix(NA, (N/2+1), N) 
+for(i in 1:dim(est)[1]) {
+	est[i,] <- A[i]*cos(c(0:(N-1))*omega[i]+phase[i])
+	}
+	
+newSeries <- apply(est, 2, sum) 
+cor(x, newSeries) ## Shows that the original series matches the Fourier transform
+```
+
+```{r some}
+s1 <- spec.pgram(newSeries, log = "no", demean = TRUE, detrend = TRUE)
+```
+
+```{r x}
+time <- c(1:N)
+m1 <- lm(x ~ time + I(time^2))
+res1 <- residuals(m1)
+plot(res1, type="l", ylab = "Detrended series", main = "Yearly cycle")
+lines(est[13,], col = "red")
+```
+
+```{r y}
+plot(res1, type="l", ylab = "Detrended series", main = "6-month cycle")
+lines(est[25,], col = "blue")
+```
+
+```{r a}
+t <- data.frame(est[13,], est[25,])
+t <- rowMeans(t)
+plot(res1, type="l", ylab = "Detrended series", main = "Average of 12-month and 6-month cycles")
+lines(t, col = "darkblue")
+```
+
+### Removing component frequencies
+
+```{r}
+x <- res1
+N <- length(x)
+fourier <- fft(x)/N
+A <- 2*Mod(fourier)[1:(N/2+1)] 
+A[1] <- A[1]/2
+phase <- Arg(fourier)[1:(N/2+1)]
+omega <- (2*pi*c(0:((N/2+1)))/N) 
+
+est <- matrix(NA, (N/2+1), N) 
+for(i in 1:dim(est)[1]) {
+	est[i,] <- A[i]*cos(c(0:(N-1))*omega[i]+phase[i])
+	}
+	
+newSeries2 <- apply(est[-c(13,25),], 2, sum)
+plot(newSeries2, type="l", ylab = "", main = "Trends and cycles removed")
+hist(newSeries2, main = "", xlab = "Residual data")
+qqnorm(newSeries2)
+qqline(newSeries2)
+s2 <- spec.pgram(newSeries2, log = "no", plot = F)
+plot(log(s2$freq), log(s2$spec)/log(sum(s2$spec)), type="l", 
+     xlab = "Log(Frequencies)", ylab = "Log(PSD)")
+```
+
+## Measuring power laws
+
+A time series $x$ can be characterized by the scaling law: $\langle \Delta x \rangle \propto \Delta t^H$ where the expected change in $x_t$ is a power function of the intervals over which those changes occur ($\Delta t$), $\forall ( \,x_{t + \Delta t} - x_t) \,$. The scaling exponent $0 < H < 1$ is therefore a global descriptor of the relationship between the series' frequency spectrum and its power spectral density function.  
+
+For random signals (e.g., Gaussian noises & Brownian motions), $H = 0.5$. In these cases, we do not expect successive observations to be correlated. But other times when we do, $H$ deviates from 0.5 according to how strongly past events are related with future events. When $0.5 < H < 1$, the series has a *persistent* correlation structure, such that past events positively predict future events. And when $0 < H < 0.5$, the series has an *anti-persistent* correlation structure, such that past events negatively predict future events.  
+
+The $H$ exponent thereby allows us to broadly characterize the trajectory of a given system, and indicates how important long-range correlations are in predicting its future states. There are a variety of ways to estimate this parameter, and many methods are based on its relationship with the power spectral density function, where: $S ( \,f ) \, \propto \frac{1}{f^\beta}$. In this formula, the scaling exponent $\beta$ is the negative linear regression coefficent that describes the log-log relationship between PSD and frequency.  
+
+Theoretically, $H$ can be estimated from $\beta$. But their relationship depends upon the type of series that is being analyzed. *fractional Gaussian noise (fGn)* refers to a stationary process where successive measurements are correlated, and *fractional Brownian motion (fBm)* refers to a nonstationary process that also contains temporal correlations. These processes may appear random when plotted, but what makes them *fractional* is that there are correlations between time points---potentially even those that are separated in time.  
+
+When we attempt to estimate $H$ from $\beta$, we see that for **fGns:** $\hat{H} = \frac{\beta + 1}{2}$, and for **fBms:** $\hat{H} = \frac{\beta - 1}{2}$. Thus, $H$ must be estimated in accordance with the methods suited for each type of series---no method can estimate $H$ with equal reliability across both types (fGn and fBm). As such, the first step in fractal analysis is to properly classify a series as a fGn or fBm.
+
+## Distinguishing fGn from fBm
+
+When considering the negative regression coefficient of a log-log PSD function, values $-1 < \beta < 1$ are thought to be indicative of fGns, while $1 < \beta < 3$ are thought to reflect fBms. Given that $H = 0.5$ for random processes, we can use the two equations above to see that white noise should have $\beta = 0$, while brown noise should have $\beta = 2$. This simply shows what parameter values we should expect when observing different types of random process, as well as how fractional processes are characterized differently in relation to them.
+
+### White noise
+```{r aa}
+set.seed(123)
+whiteNoise <- rnorm(10000)
+plot(whiteNoise, type="l")
+s3 <- spec.pgram(whiteNoise, log="no")
+plot(log(s3$freq), log(s3$spec)/log(sum(s3$spec)), type="l",
+     xlab = "Log(Frequencies)", ylab = "Log(PSD)")
+```
+
+As you can see in the plot above, we would expect to find a $\beta$ value close to 0 for this series. This can be seen in the regression table below:
+
+```{r}
+m2 <- lm(log(s3$spec) ~ log(s3$freq))
+summary(m2)
+```
+
+### Brown noise
+
+```{r}
+set.seed(109)
+brownNoise <- cumsum(rnorm(10000))
+plot(brownNoise, type="l")
+s4 <- spec.pgram(brownNoise, log = "no", plot = F)
+plot(log(s4$freq), log(s4$spec)/log(sum(s4$spec)), type="l", 
+     xlab = "Log(Frequencies)", ylab = "Log(PSD)")
+```
+
+For brown noise, we see a distinct linear trend in the log-log PSD. We consider the negative coefficient to be the scaling exponent here, and therefore expect a $\beta$ close to -2. 
+
+```{r}
+m3 <- lm(log(s4$spec) ~ log(s4$freq))
+summary(m3)
+```
+
+Here, $\beta =$ `-1.79`. The negative value is considered when distinguishing fGns and fBms, so we take this value as 1.79. This is close to the expected value of 2, but it also demonstrates that the PSD method of estimating $\beta$ contains some potential bias.
+
+## Power spectral density methods
+
+### PSD
+
+Below is one function for estimating $\beta$ in the same way demonstrated above. Given a series of equally-spaced observations, the `PSD` function uses a fast Fourier transform to calculate its spectrogram and estimate the regression slope for the log-log plot. The negative of this coefficient is returned, and is then used as an estimate of the scaling exponent $\beta$ within the formula: $S ( \,f ) \, \propto \frac{1}{f^\beta}$  
+
+This `PSD` function can thus be used to try and distinguish between fGn and fBm signals. When `PSD` returns $-1 < \beta < 1$, we would classify the process as a fGn. And when `PSD` returns $1 < \beta < 3$, we classify the process as a fBm. 
+
+```{r}
+PSD <- function(series, center = F, trend = T, taper = .1, plot = F) {
+  s <- spec.pgram(series, log="no", demean = center, detrend = trend, 
+                  taper = taper, plot = F)
+  if(plot) plot(log(s$freq), log(s$spec)/log(sum(s$spec)), 
+             xlab = "Log(Frequencies)", ylab = "Log(PSD)", 
+             type = "l")
+  m <- lm(log(s$spec) ~ log(s$freq))
+  b <- coef(m)[2]
+  names(b) <- "Beta"
+  -b
+}
+```
+
+This method has been shown to produce biased estimates, however, and so has been modified by researchers into a measure called: $^{low}PSD_{we}$. This method essentially involves pre-processing the data and focusing on a narrower range of frequencies when estimating $\beta$.  
+
+### $^{low}PSD_{we}$
+
+First, the mean of the series is subtracted from each observation. Second, a parabolic window is applied to the series, where the function: $1 - \left( \frac{2j}{N+1} - 1 \right)^2 \quad \forall j = 1,2,\ldots,N$ is multiplied by each observation. Third a bridge detrending is performed, where a line connecting the first and last measurements is controlled for. Finally, the spectrogram is only calculated for the lowest 1/8 of all frequencies represented on that spectrum. Simulation research has shown that this estimate tends to be more reliable than the untransformed `PSD` method, but more work must be done to determine its limitations with different parameterizations. Stadnitski (2012) describes this method in detail, and the code below has been adapted from their materials.
+
+```{r ss}
+lowPSDwe <- function(y) {
+  n <- length(y)
+  y <- y - mean(y)
+  for(i in 1:n) {
+    y[i] <- y[i] * (1-((2*i/(n+1)) - 1)**2)  
+  }        
+  bridge <- seq(y[1], y[n], length=n)
+  y <- y - bridge           
+  spec <- spec.pgram(y, log="no", plot=FALSE)
+  nr <- (n/2) * (1/8)                 
+  specfreq <- spec$freq[1:nr]
+  specspec <- spec$spec[1:nr]
+  lmb <- lm(log(specspec) ~ log(specfreq))
+  b <- coef(lmb)[2]
+  names(b) <- "Beta"
+  -b 
+}
+```
+
+The `lowPSDwe` function tends to be more accurate in discriminating between fGns and fBms than the `PSD` function. While `lowPSDwe` does indeed work well for high and low values of $\beta$, where $-1 < \beta < 0.38 \vee 1.04 < \beta < 3$, estimates near $\beta = 1$ tend to have high error rates and uncertainty. This uncertainty lies right around the border separating classification of fGns and fBms. Neither method is known to be reliable for estimating $\beta$ within this range, and so they are only considered effective when $\beta$ takes on more extreme values.  
+
+Although this means that fGns and fBms can, in many cases, be reliably distinguished by estimating $\beta$ using `lowPSDwe` or `PSD`, we must also remember that estimates close to 0 or 2 may reflect white or brown noise, respectively. For this reason, it is good to estimate $H$ using an additional procedure, other than simply converting the $\beta$ value in accordance with the series' classification.  
+
+*Detrended fluctuation analysis (DFA)* is one such method, and shows decent reliability (particularly for fGns). DFA is thought to be somewhat biased at estimating $H$ in fBms, but generally performs well with fGns. When applied to fGns, however, the differences between time points must be integrated before $H$ is calculated, while for fBms this step is not performed.  
+
+### White noise: Estimating $\beta$ and $H$
+
+```{r}
+PSD(whiteNoise)
+lowPSDwe(whiteNoise)
+DFA(whiteNoise, sum.order=1)
+```
+
+Both methods produce similar results, with `PSD` being slightly closer than `lowPSDwe` to 0. The DFA applies first-order integration and results in $H =$ `0.44`, which is close to the expected value of 0.5.
+
+### Brown noise: Estimating $\beta$ and $H$
+
+```{r}
+PSD(brownNoise)
+lowPSDwe(brownNoise)
+DFA(brownNoise)
+```
+
+With brown noise, the `lowPSDwe` function gives a closer estimate to 2 than `PSD` (`1.98` vs. `1.79`). The DFA, without integration, produces $H =$ `0.46`.  
+
+So, we see that these methods provide output consistent with our expectations, at least for white and brown noise. Now we can test them on signals with known fractal (e.g., power law) characteristics. 
+
+## Fractional Signals
+
+### fractional Brownian motion (fBm)
+
+```{r}
+fgn <- SimulateFGN(10000, .25)
+fbm <- cumsum(fgn)
+plot(fbm, type="l")
+ggAcf(fbm, lag.max=200)
+PSD(fbm, plot = T)
+lowPSDwe(fbm)
+DFA(fbm)
+```
+
+Here we see the power-law structure clearly. 10000 observations were simulated as fGn with $H = .25$. The integral was then taken to create a fBm. In analyzing the series we see that the `DFA` method returns $H = .23$, and `lowPSDwe` returns $\beta = 1.40$. The expected value of $\beta$ for fBms with $H = 0.25$ is 1.5. Here we see that the `lowPSDwe` method came close to this value, and the `DFA` did as well.
+
+### fractional Gaussian noise (fGn)
+
+```{r}
+plot(fgn, type="l")
+ggAcf(fgn, lag.max=200)
+PSD(fgn, plot=T)
+lowPSDwe(fgn)
+DFA(fgn, sum.order=1)
+```
+
+Here both the `PSD` and `lowPSDwe` functions perform about the same. For fGns with $H = 0.25$, the expected value of $\beta$ is -0.5. 
+
+### Example with short-range correlations
+
+In both of the previous examples, the estimates have been close to what was expected and/or known in advance. However, this isn't always so easy. The presence of strong short-term correlations can make longer-term correlations difficult to detect. The example below shows how adding short-term correlations (via an autoregressive parameter) can lead to less agreement among the estimation procedures.
+
+```{r}
+e <- fracdiff.sim(10000, ar = .4, d = .3)
+plot(e$series, type="l")
+e <- e$series
+ggAcf(e, lag.max = 200)
+PSD(e, plot=T)
+lowPSDwe(e)
+DFA(e, sum.order=1)
+```
+
+The estimate from `lowPSDwe` is closer than `PSD` to what would be expected from the $H$ value from the `DFA`, but both values fall within the range of uncertainty where it is difficult to determine their accuracy. While there may be ways to test these estimates and confirm the classification, this represents a general challenge when analyzing "noisy" data, where short-term and long-term correlations are difficult to pull apart.
+
+## Conclusion
+
+Essentially, the first step in analyzing long-range correlations is distinguishing between fGns and fBms. This can be done using the `lowPSDwe` function; when $-1 < \beta < 0.38$, we can classify the series as a fGn; and when $1.04 < \beta < 3$, we can classify the series as a fBm. Values closer to the middle may be highly unreliable, and must be interpreted with caution.  
+
+Next, DFA can be used to estimate $H$ from the series. If the series in fGn, then the differences between time points must be integrated during the procedure. If the series is fBm, then no integration is performed. The $H$ values returned by the DFA should be close to the $H$ estimates that can be calculated directly from $\beta$.  
+
+There is still work to be done in advancing these methods and making them more reliable, but the examples show where progress has been made as well as where there are still challenges.
+
+## References
+
+Delignieres, D., Ramdani, S., Lemoine, L, Torre, K., Fortes, M., & Ninot, G. (2006). Fractal analyses for 'short' time series: A re-assessment of classical methods. *Journal of Mathematical Psychology, 50,* 525-544.  
+
+Eke, A., Herman, P., Bassingthwaighte, J. B., Raymond, G., Percival, D., Cannon, M. J., Balla, I., & Ikenyi, C. (2000). Physiological time series: Distinguishing fractal noises from motions. *Eur. J. Physiol., 439,* 403-415.  
+
+Stadnitski, T. (2012). Measuring fractality. *Frontiers in Physiology, 3,* 1-13.  
+
+Stroe-Kunold, E., Stadnytska, T., Werner, J., & Braun, S. (2009). Estimating long-range dependence in time series: An evaluation of estimators implemented in R. *Behavior Research Methods, 41,* 909-923.  
+
+Wijnants, M. L. (2014). A comment on "Measuring fractality" by Stadnitski (2012). *Frontiers in Physiology, 5,* 1-4.
